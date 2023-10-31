@@ -510,7 +510,7 @@ class HbbProcessor(processor.ProcessorABC):
             ])
             
         return processor.accumulate(self.process_shift(update(events, collections), name) for collections, name in shifts)
-        #print('only one shift')
+        #Only uncomment when you need to test on a single process shift 
         #i = 0
         #for collections, name in shifts:
         #    b = (self.process_shift(update(events, collections), name))
