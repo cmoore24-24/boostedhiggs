@@ -3,10 +3,17 @@ import numpy as np
 import awkward as ak
 import json
 import copy
+import dask
+import dask_awkward as dak
 from collections import defaultdict
-from coffea import processor, hist
+from coffea import processor#, hist
 import hist as hist2
+import hist.dask as dah
 from coffea.analysis_tools import Weights, PackedSelection
+import importlib.resources
+import contextlib
+from coffea.lookup_tools import extractor
+from coffea.jetmet_tools import JECStack, CorrectedJetsFactory, CorrectedMETFactory
 from coffea.lumi_tools import LumiMask
 from boostedhiggs.btag import BTagEfficiency, BTagCorrector
 from boostedhiggs.common import (
@@ -38,13 +45,191 @@ from boostedhiggs.corrections import (
 logger = logging.getLogger(__name__)
 
 
+jec_name_map = {
+    'JetPt': 'pt',
+    'JetMass': 'mass',
+    'JetEta': 'eta',
+    'JetA': 'area',
+    'ptGenJet': 'pt_gen',
+    'ptRaw': 'pt_raw',
+    'massRaw': 'mass_raw',
+    'Rho': 'event_rho',
+    'METpt': 'pt',
+    'METphi': 'phi',
+    'JetPhi': 'phi',
+    'UnClusteredEnergyDeltaX': 'MetUnclustEnUpDeltaX',
+    'UnClusteredEnergyDeltaY': 'MetUnclustEnUpDeltaY',
+}
+
+
+def jet_factory_factory(files):
+    ext = extractor()
+    with contextlib.ExitStack() as stack:
+        # this would work even in zipballs but since extractor keys on file extension and
+        # importlib make a random tempfile, it won't work. coffea needs to enable specifying the type manually
+        # for now we run this whole module as $ python -m boostedhiggs.build_jec boostedhiggs/data/jec_compiled.pkl.gz
+        # so the compiled value can be loaded using the importlib tool in corrections.py
+        real_files = [stack.enter_context(importlib.resources.path("boostedhiggs.data", f)) for f in files]
+        ext.add_weight_sets([f"* * {file}" for file in real_files])
+        ext.finalize()
+
+    jec_stack = JECStack(ext.make_evaluator())
+    return CorrectedJetsFactory(jec_name_map, jec_stack)
+
+
+jet_factory = {
+    "2016mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_L1FastJet_AK4PFchs.txt
+            "Summer16_07Aug2017_V11_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_L2Relative_AK4PFchs.txt
+            "Summer16_07Aug2017_V11_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/RegroupedV2_Summer16_07Aug2017_V11_MC_UncertaintySources_AK4PFchs.txt
+            "RegroupedV2_Summer16_07Aug2017_V11_MC_UncertaintySources_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_Uncertainty_AK4PFchs.txt
+            "Summer16_07Aug2017_V11_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Summer16_25nsV1b_MC/Summer16_25nsV1b_MC_PtResolution_AK4PFchs.txt
+            "Summer16_25nsV1b_MC_PtResolution_AK4PFchs.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Summer16_25nsV1b_MC/Summer16_25nsV1b_MC_SF_AK4PFchs.txt
+            "Summer16_25nsV1b_MC_SF_AK4PFchs.jersf.txt.gz",
+        ]
+    ),
+    "2016mcNOJER": jet_factory_factory(
+        files=[
+            "Summer16_07Aug2017_V11_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            "Summer16_07Aug2017_V11_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            "Summer16_07Aug2017_V11_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+        ]
+    ),
+    "2017mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_L1FastJet_AK4PFchs.txt
+            "Fall17_17Nov2017_V32_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_L2Relative_AK4PFchs.txt
+            "Fall17_17Nov2017_V32_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            # https://raw.githubusercontent.com/cms-jet/JECDatabase/master/textFiles/Fall17_17Nov2017_V32_MC/RegroupedV2_Fall17_17Nov2017_V32_MC_UncertaintySources_AK4PFchs.txt
+            "RegroupedV2_Fall17_17Nov2017_V32_MC_UncertaintySources_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_Uncertainty_AK4PFchs.txt
+            "Fall17_17Nov2017_V32_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Fall17_V3b_MC/Fall17_V3b_MC_PtResolution_AK4PFchs.txt
+            "Fall17_V3b_MC_PtResolution_AK4PFchs.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Fall17_V3b_MC/Fall17_V3b_MC_SF_AK4PFchs.txt
+            "Fall17_V3b_MC_SF_AK4PFchs.jersf.txt.gz",
+        ]
+    ),
+    "2017mcNOJER": jet_factory_factory(
+        files=[
+            "Fall17_17Nov2017_V32_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            "Fall17_17Nov2017_V32_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            "Fall17_17Nov2017_V32_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+        ]
+    ),
+    "2018mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_L1FastJet_AK4PFchs.txt
+            "Autumn18_V19_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_L2Relative_AK4PFchs.txt
+            "Autumn18_V19_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            # https://raw.githubusercontent.com/cms-jet/JECDatabase/master/textFiles/Autumn18_V19_MC/RegroupedV2_Autumn18_V19_MC_UncertaintySources_AK4PFchs.txt
+            "RegroupedV2_Autumn18_V19_MC_UncertaintySources_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_Uncertainty_AK4PFchs.txt
+            "Autumn18_V19_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Autumn18_V7b_MC/Autumn18_V7b_MC_PtResolution_AK4PFchs.txt
+            "Autumn18_V7b_MC_PtResolution_AK4PFchs.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Autumn18_V7b_MC/Autumn18_V7b_MC_SF_AK4PFchs.txt
+            "Autumn18_V7b_MC_SF_AK4PFchs.jersf.txt.gz",
+        ]
+    ),
+    "2018mcNOJER": jet_factory_factory(
+        files=[
+            "Autumn18_V19_MC_L1FastJet_AK4PFchs.jec.txt.gz",
+            "Autumn18_V19_MC_L2Relative_AK4PFchs.jec.txt.gz",
+            "Autumn18_V19_MC_Uncertainty_AK4PFchs.junc.txt.gz",
+        ]
+    ),
+}
+
+fatjet_factory = {
+    "2016mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_L1FastJet_AK8PFPuppi.txt
+            "Summer16_07Aug2017_V11_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_L2Relative_AK8PFPuppi.txt
+            "Summer16_07Aug2017_V11_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_UncertaintySources_AK8PFPuppi.txt
+            "Summer16_07Aug2017_V11_MC_UncertaintySources_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Summer16_07Aug2017_V11_MC/Summer16_07Aug2017_V11_MC_Uncertainty_AK8PFPuppi.txt
+            "Summer16_07Aug2017_V11_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Summer16_25nsV1b_MC/Summer16_25nsV1b_MC_PtResolution_AK8PFPuppi.txt
+            "Summer16_25nsV1b_MC_PtResolution_AK8PFPuppi.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Summer16_25nsV1b_MC/Summer16_25nsV1b_MC_SF_AK8PFPuppi.txt
+            "Summer16_25nsV1b_MC_SF_AK8PFPuppi.jersf.txt.gz",
+        ]
+    ),
+    "2016mcNOJER": jet_factory_factory(
+        files=[
+            "Summer16_07Aug2017_V11_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            "Summer16_07Aug2017_V11_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            "Summer16_07Aug2017_V11_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+        ]
+    ),
+    "2017mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_L1FastJet_AK8PFPuppi.txt
+            "Fall17_17Nov2017_V32_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_L2Relative_AK8PFPuppi.txt
+            "Fall17_17Nov2017_V32_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            # https://raw.githubusercontent.com/cms-jet/JECDatabase/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_UncertaintySources_AK8PFPuppi.txt
+            "Fall17_17Nov2017_V32_MC_UncertaintySources_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Fall17_17Nov2017_V32_MC/Fall17_17Nov2017_V32_MC_Uncertainty_AK8PFPuppi.txt
+            "Fall17_17Nov2017_V32_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Fall17_V3b_MC/Fall17_V3b_MC_PtResolution_AK8PFPuppi.txt
+            "Fall17_V3b_MC_PtResolution_AK8PFPuppi.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Fall17_V3b_MC/Fall17_V3b_MC_SF_AK8PFPuppi.txt
+            "Fall17_V3b_MC_SF_AK8PFPuppi.jersf.txt.gz",
+        ]
+    ),
+    "2017mcNOJER": jet_factory_factory(
+        files=[
+            "Fall17_17Nov2017_V32_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            "Fall17_17Nov2017_V32_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            "Fall17_17Nov2017_V32_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+        ]
+    ),
+    "2018mc": jet_factory_factory(
+        files=[
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_L1FastJet_AK8PFPuppi.txt
+            "Autumn18_V19_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_L2Relative_AK8PFPuppi.txt
+            "Autumn18_V19_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            # https://raw.githubusercontent.com/cms-jet/JECDatabase/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_UncertaintySources_AK8PFPuppi.txt
+            "Autumn18_V19_MC_UncertaintySources_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JECDatabase/raw/master/textFiles/Autumn18_V19_MC/Autumn18_V19_MC_Uncertainty_AK8PFPuppi.txt
+            "Autumn18_V19_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Autumn18_V7b_MC/Autumn18_V7b_MC_PtResolution_AK8PFPuppi.txt
+            "Autumn18_V7b_MC_PtResolution_AK8PFPuppi.jr.txt.gz",
+            # https://github.com/cms-jet/JRDatabase/raw/master/textFiles/Autumn18_V7b_MC/Autumn18_V7b_MC_SF_AK8PFPuppi.txt
+            "Autumn18_V7b_MC_SF_AK8PFPuppi.jersf.txt.gz",
+        ]
+    ),
+    "2018mcNOJER": jet_factory_factory(
+        files=[
+            "Autumn18_V19_MC_L1FastJet_AK8PFPuppi.jec.txt.gz",
+            "Autumn18_V19_MC_L2Relative_AK8PFPuppi.jec.txt.gz",
+            "Autumn18_V19_MC_Uncertainty_AK8PFPuppi.junc.txt.gz",
+        ]
+    ),
+}
+
+met_factory = CorrectedMETFactory(jec_name_map)
+
+
 def update(events, collections):
     """Return a shallow copy of events array with some collections swapped out"""
     out = events
     for name, value in collections.items():
         out = ak.with_field(out, value, name)
     return out
-
 
 class HbbProcessor(processor.ProcessorABC):
     def __init__(self, year='2017', jet_arbitration='pt', tagger='v2',
@@ -145,7 +330,7 @@ class HbbProcessor(processor.ProcessorABC):
                     'EcalDeadCellTriggerPrimitiveFilter',
                     'BadPFMuonFilter',
                     'eeBadScFilter',
-                    'ecalBadCalibFilterV2',
+                    #'ecalBadCalibFilterV2',
                 ],
                 'mc': [
                     'goodVertices',
@@ -155,7 +340,7 @@ class HbbProcessor(processor.ProcessorABC):
                     'EcalDeadCellTriggerPrimitiveFilter',
                     'BadPFMuonFilter',
                     'eeBadScFilter',
-                    'ecalBadCalibFilterV2',
+                    #'ecalBadCalibFilterV2',
                 ],
             },
             '2018': {
@@ -167,7 +352,7 @@ class HbbProcessor(processor.ProcessorABC):
                     'EcalDeadCellTriggerPrimitiveFilter',
                     'BadPFMuonFilter',
                     'eeBadScFilter',
-                    'ecalBadCalibFilterV2',
+                    #'ecalBadCalibFilterV2',
                 ],
                 'mc': [
                     'goodVertices',
@@ -177,7 +362,7 @@ class HbbProcessor(processor.ProcessorABC):
                     'EcalDeadCellTriggerPrimitiveFilter',
                     'BadPFMuonFilter',
                     'eeBadScFilter',
-                    'ecalBadCalibFilterV2',
+                    #'ecalBadCalibFilterV2',
                 ],
             },
         }
@@ -203,38 +388,38 @@ class HbbProcessor(processor.ProcessorABC):
 
         optbins = np.r_[np.linspace(0, 0.15, 30, endpoint=False), np.linspace(0.15, 1, 86)]
         self.make_output = lambda: {
-            'sumw': 0.,
-            'cutflow_msd': hist2.Hist(
+            #'sumw': 0.,
+            'cutflow_msd': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='cut', label='Cut index', growth=True),
                 hist2.axis.Regular(23, 40, 201, name='msd', label=r'Jet $m_{sd}$'),
                 hist2.storage.Weight(),
             ),
-            'cutflow_eta': hist2.Hist(
+            'cutflow_eta': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='cut', label='Cut index', growth=True),
                 hist2.axis.Regular(40, -2.5, 2.5, name='eta', label=r'Jet $\eta$'),
                 hist2.storage.Weight(),
             ),
-            'cutflow_pt': hist2.Hist(
+            'cutflow_pt': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='cut', label='Cut index', growth=True),
                 hist2.axis.Regular(100, 400, 1200, name='pt', label=r'Jet $p_{T}$ [GeV]'),
                 hist2.storage.Weight(),
             ),
-            'nminus1_n2ddt': hist2.Hist(
+            'nminus1_n2ddt': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.Regular(40, -0.25, 0.25, name='n2ddt', label='N2ddt value'),
                 hist2.storage.Weight(),
             ),
-            'btagWeight': hist2.Hist(
+            'btagWeight': dah.Hist(
                 hist2.axis.Regular(50, 0, 3, name='val', label='BTag correction'),
                 hist2.storage.Weight(),
             ),
-            'templates': hist2.Hist(
+            'templates': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.StrCategory([], name='systematic', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
@@ -243,7 +428,7 @@ class HbbProcessor(processor.ProcessorABC):
                 *taggerbins,
                 hist2.storage.Weight(),
             ),
-            'wtag': hist2.Hist(
+            'wtag': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.StrCategory([], name='systematic', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
@@ -253,27 +438,27 @@ class HbbProcessor(processor.ProcessorABC):
                 *taggerbins[1:],
                 hist2.storage.Weight(),
             ),
-            'signal_opt': hist2.Hist(
+            'signal_opt': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
                 hist2.axis.Variable(optbins, name='ddc', label=r'Jet CvL score'),
                 hist2.axis.Variable(optbins, name='ddcvb', label=r'Jet CvB score'),
                 hist2.storage.Weight(),
             ),
-            'signal_optb': hist2.Hist(
+            'signal_optb': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.IntCategory([0, 1, 2, 3], name='genflavor'),
                 hist2.axis.Variable(optbins, name='ddb', label=r'Jet BvL score'),
                 hist2.storage.Weight(),
             ),
-            'genresponse_noweight': hist2.Hist(
+            'genresponse_noweight': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.StrCategory([], name='systematic', growth=True),
                 hist2.axis.Variable([450, 500, 550, 600, 675, 800, 1200], name='pt', label=r'Jet $p_{T}$ [GeV]'),
                 hist2.axis.Variable(np.geomspace(400, 1200, 60), name='genpt', label=r'Generated Higgs $p_{T}$ [GeV]'),
                 hist2.storage.Double(),
             ),
-            'genresponse': hist2.Hist(
+            'genresponse': dah.Hist(
                 hist2.axis.StrCategory([], name='region', growth=True),
                 hist2.axis.StrCategory([], name='systematic', growth=True),
                 hist2.axis.Variable([450, 500, 550, 600, 675, 800, 1200], name='pt', label=r'Jet $p_{T}$ [GeV]'),
@@ -290,12 +475,10 @@ class HbbProcessor(processor.ProcessorABC):
             # Nominal JEC are already applied in data
             return self.process_shift(events, None)
 
-        import cachetools
-        jec_cache = cachetools.Cache(np.inf)
         nojer = "NOJER" if self._skipJER else ""
-        fatjets = fatjet_factory[f"{self._year}mc{nojer}"].build(add_jec_variables(events.FatJet, events.fixedGridRhoFastjetAll), jec_cache)
-        jets = jet_factory[f"{self._year}mc{nojer}"].build(add_jec_variables(events.Jet, events.fixedGridRhoFastjetAll), jec_cache)
-        met = met_factory.build(events.MET, jets, {})
+        fatjets = fatjet_factory[f"{self._year}mc{nojer}"].build(add_jec_variables(events.FatJet, events.fixedGridRhoFastjetAll))
+        jets = jet_factory[f"{self._year}mc{nojer}"].build(add_jec_variables(events.Jet, events.fixedGridRhoFastjetAll))
+        met = met_factory.build(events.MET, jets)
 
         shifts = [
             ({"Jet": jets, "FatJet": fatjets, "MET": met}, None),
@@ -325,32 +508,40 @@ class HbbProcessor(processor.ProcessorABC):
             shifts.extend([
                 ({"Jet": shift_jets, "FatJet": shift_fatjets, "MET": met}, "HEM18"),
             ])
-
+            
         return processor.accumulate(self.process_shift(update(events, collections), name) for collections, name in shifts)
+        #print('only one shift')
+        #i = 0
+        #for collections, name in shifts:
+        #    b = (self.process_shift(update(events, collections), name))
+        #    i += 1
+        #    if i == 1:
+        #        break
+        #return b
 
     def process_shift(self, events, shift_name):
         dataset = events.metadata['dataset']
         isRealData = not hasattr(events, "genWeight")
         selection = PackedSelection()
-        weights = Weights(len(events), storeIndividual=True)
+        #weights = Weights(len(events), storeIndividual=True)
+        weights = Weights(size=None, storeIndividual=True)
         output = self.make_output()
         if shift_name is None and not isRealData:
             output['sumw'] = ak.sum(events.genWeight)
-
         if isRealData or self._newTrigger:
-            trigger = np.zeros(len(events), dtype='bool')
+            trigger = ak.values_astype(ak.zeros_like(events.run), bool)
             for t in self._triggers[self._year]:
                 if t in events.HLT.fields:
                     trigger = trigger | events.HLT[t]
             selection.add('trigger', trigger)
             del trigger
         else:
-            selection.add('trigger', np.ones(len(events), dtype='bool'))
+            selection.add('trigger', ak.values_astype(ak.ones_like(events.run), bool))
 
         if isRealData:
             selection.add('lumimask', lumiMasks[self._year](events.run, events.luminosityBlock))
         else:
-            selection.add('lumimask', np.ones(len(events), dtype='bool'))
+            selection.add('lumimask', ak.values_astype(ak.ones_like(events.run), bool))
 
         if isRealData:
             trigger = np.zeros(len(events), dtype='bool')
@@ -360,18 +551,18 @@ class HbbProcessor(processor.ProcessorABC):
             selection.add('muontrigger', trigger)
             del trigger
         else:
-            selection.add('muontrigger', np.ones(len(events), dtype='bool'))
+            selection.add('muontrigger', ak.values_astype(ak.ones_like(events.run), bool))
 
-        metfilter = np.ones(len(events), dtype='bool')
+        metfilter = ak.values_astype(ak.ones_like(events.run), bool)
         for flag in self._met_filters[self._year]['data' if isRealData else 'mc']:
-            metfilter &= np.array(events.Flag[flag])
+            metfilter = dask.array.bitwise_and(metfilter, events.Flag[flag])
         selection.add('metfilter', metfilter)
         del metfilter
 
         fatjets = events.FatJet
         fatjets['msdcorr'] = corrected_msoftdrop(fatjets)
         fatjets['qcdrho'] = 2 * np.log(fatjets.msdcorr / fatjets.pt)
-        fatjets['n2ddt'] = fatjets.n2b1 - n2ddt_shift(fatjets, year=self._year)
+        fatjets['n2ddt'] = fatjets.n2b1 - n2ddt_shift(fatjets=fatjets, year=self._year)
         fatjets['msdcorr_full'] = fatjets['msdcorr'] * self._msdSF[self._year]
 
         candidatejet = fatjets[
@@ -488,13 +679,13 @@ class HbbProcessor(processor.ProcessorABC):
             goodelectron = (
                 (events.Electron.pt > 10)
                 & (abs(events.Electron.eta) < 2.5)
-                & (events.Electron.cutBased >= events.Electron.LOOSE)
+                #& (events.Electron.cutBased >= events.Electron.LOOSE)
             )
             nelectrons = ak.sum(goodelectron, axis=1)
 
             ntaus = ak.sum(
                 (events.Tau.pt > 20)
-                & events.Tau.idDecayMode  # bacon iso looser than Nano selection
+                #& events.Tau.idDecayMode  # bacon iso looser than Nano selection
                 & ak.all(events.Tau.metric_table(events.Muon[goodmuon]) > 0.4, axis=2)
                 & ak.all(events.Tau.metric_table(events.Electron[goodelectron]) > 0.4, axis=2),
                 axis=1,
@@ -558,7 +749,7 @@ class HbbProcessor(processor.ProcessorABC):
             else:
                 add_jetTriggerWeight(weights, candidatejet.msdcorr, candidatejet.pt, self._year)
 
-            add_mutriggerSF(weights, leadingmuon, self._year, selection)
+            add_mutriggerSF(weights, leadingmuon, self._year, selection)          
             add_mucorrectionsSF(weights, leadingmuon, self._year, selection)
 
             if self._year in ("2016", "2017"):
@@ -579,12 +770,13 @@ class HbbProcessor(processor.ProcessorABC):
             'noselection': [],
         }
 
+
         def normalize(val, cut):
             if cut is None:
-                ar = ak.to_numpy(ak.fill_none(val, np.nan))
+                ar = ak.fill_none(val, np.nan)
                 return ar
             else:
-                ar = ak.to_numpy(ak.fill_none(val[cut], np.nan))
+                ar = ak.fill_none(val[cut], np.nan)
                 return ar
 
         import time
@@ -629,10 +821,13 @@ class HbbProcessor(processor.ProcessorABC):
 
 
         if shift_name is None:
-            systematics = [None] + list(weights.variations)
+            systematics = [None] + sorted(weights.variations)
         else:
             systematics = [shift_name]
 
+        
+            
+            
         def fill(region, systematic, wmod=None):
             selections = regions[region]
             cut = selection.all(*selections)
@@ -672,7 +867,7 @@ class HbbProcessor(processor.ProcessorABC):
                 if wmod is not None:
                     _custom_weight = events.genWeight[cut] * wmod[cut]
                 else:
-                    _custom_weight = np.ones_like(weight)
+                    _custom_weight = ak.ones_like(weight.divisions)
                 output['genresponse_noweight'].fill(
                     region=region,
                     systematic=sname,
