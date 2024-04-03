@@ -135,37 +135,29 @@ def corrected_msoftdrop(fatjets):
     dazsle_msd = (fatjets.subjets * (1 - fatjets.subjets.rawFactor)).sum()
     return dazsle_msd.mass * sf
 
+# All PDF weights and alpha_S weights                                                                            
 def add_pdf_weight(weights, pdf_weights):
-    nom = ak.ones_like(weights.weight())
-    up = ak.ones_like(weights.weight())
-    down = ak.ones_like(weights.weight())
 
-    # NNPDF31_nnlo_hessian_pdfas
-    # https://lhapdfsets.web.cern.ch/current/NNPDF31_nnlo_hessian_pdfas/NNPDF31_nnlo_hessian_pdfas.info
-    if pdf_weights is not None and "306000 - 306102" in pdf_weights.__doc__:
-        # Hessian PDF weights
-        # Eq. 21 of https://arxiv.org/pdf/1510.03865v1.pdf
-        arg = pdf_weights[:, 1:-2] - 1.0 #np.ones((len(weights.weight()), 100))
-        summed = ak.sum(np.square(arg), axis=1)
-        pdf_unc = np.sqrt((1. / 99.) * summed)
-        weights.add('PDF_weight', nom, pdf_unc + nom)
+    docstring = pdf_weights.__doc__
 
-        # alpha_S weights
-        # Eq. 27 of same ref
-        as_unc = 0.5 * (pdf_weights[:, 102] - pdf_weights[:, 101])
-        weights.add('aS_weight', nom, as_unc + nom)
+    nweights = len(weights.weight())
+    nom = np.ones(nweights)
 
-        # PDF + alpha_S weights
-        # Eq. 28 of same ref
-        pdfas_unc = np.sqrt(np.square(pdf_unc) + np.square(as_unc))
-        weights.add('PDFaS_weight', nom, pdfas_unc + nom)
+    for i in range(0,103):
+        weights.add('PDF_weight_'+str(i), nom, pdf_weights[:,i])
 
-    else:
-        weights.add('aS_weight', nom, up, down)
-        weights.add('PDF_weight', nom, up, down)
-        weights.add('PDFaS_weight', nom, up, down)
+# All 9 scale variations                                                  
+def add_scalevar(weights, var_weights):
 
-# Jennet adds PS weights
+    docstring = var_weights.__doc__
+
+    nweights = len(weights.weight())
+    nom = np.ones(nweights)
+
+    for i in range(0,9):
+        weights.add('scalevar_'+str(i), nom, var_weights[:,i])
+
+# Parton shower weights
 def add_ps_weight(weights, ps_weights):
     nom = ak.ones_like(weights.weight())
     up_isr = ak.ones_like(weights.weight())
